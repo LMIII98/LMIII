@@ -59,9 +59,9 @@ and renders the prologue. On this machine it runs the world at 0.6–1.9 fps
 and **lost the device after ~150 s**; skipping one compute pipeline
 (`VICTORY_SKIP_PIPELINES=2561af9577c47289`) plus per-list submission
 (`VICTORY_GPU_TIMING=1`) made it survive more than 280 s with the slowest list
-down from 5,038 ms to ~100 ms. `docs/gta6-fork-agility-and-probe.patch` carries
-this branch's two pieces over to that fork (the Agility SDK exports and the
-texture probe).
+down from 5,038 ms to ~100 ms. That fork carries this branch's two pieces over
+to it (the Agility SDK exports and the texture probe) as its commit
+`Local: ship the Agility SDK runtime …`.
 
 ## Running it (your own files)
 
