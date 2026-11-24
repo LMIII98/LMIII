@@ -1271,7 +1271,28 @@ impl Batch {
     }
 
     fn flush(&mut self) {
-        for (shadow, from, to) in self.refreshes.drain(..) {
+        // The world declares dozens of overlapping views of one 174 MB buffer
+        // per frame (its material and geometry heaps), so copying each range
+        // on its own moves gigabytes a frame: 8.5 GB here. Ranges of one copy
+        // that overlap are one range: merge them first.
+        let mut steps: Vec<(std::sync::Arc<crate::shadow::Shadow>, usize, usize)> =
+            self.refreshes.drain(..).collect();
+        steps.sort_unstable_by_key(|(s, from, to)| {
+            (std::sync::Arc::as_ptr(s) as usize, *from, *to)
+        });
+        let mut k = 0;
+        while k < steps.len() {
+            let shadow = steps[k].0.clone();
+            let from = steps[k].1;
+            let mut to = steps[k].2;
+            let mut n = k + 1;
+            while n < steps.len()
+                && std::sync::Arc::ptr_eq(&steps[n].0, &shadow)
+                && steps[n].1 <= to
+            {
+                to = to.max(steps[n].2);
+                n += 1;
+            }
             let started = std::time::Instant::now();
             let copied = shadow.update(from, to - from);
             let us = started.elapsed().as_micros() as u64;
@@ -1279,6 +1300,7 @@ impl Batch {
             crate::copystat::range(from, to - from, us, 0);
             PREPARING[0].fetch_add(us, Ordering::Relaxed);
             PREPARING[1].fetch_add(copied as u64, Ordering::Relaxed);
+            k = n;
         }
     }
 }
