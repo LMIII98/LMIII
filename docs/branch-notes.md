@@ -1,5 +1,23 @@
 # This branch: running the 1.0.2.1 Scarlett build on one Windows PC
 
+## Branches here
+
+| Branch | What |
+|---|---|
+| `main` | this one: upstream `ffe310e` plus the fixes and measurements below |
+| `gta6-fork` | [fxceless/victory-gta6](https://github.com/fxceless/victory-gta6) as it stands (34k lines on the same base: colour twins for 3D targets, meshlet culling, light read-back, ray-tracing BVH/intersect), plus this branch's Agility SDK export and texture probe |
+
+The fork is the one that renders the prologue. On the machine here it loses the
+device after ~150 s until two switches are set:
+
+```powershell
+$env:VICTORY_SKIP_PIPELINES = '2561af9577c47289'   # the compute pipeline that hangs the card
+$env:VICTORY_GPU_TIMING     = '1'                  # one list per submission: no 5-second lists
+```
+
+With both, the world ran past 280 s, the slowest list fell from 5,038 ms to
+~100 ms, and frames took 0.8–1.3 s.
+
 This is a working branch on top of [VIctory](README.md) `main` (`ffe310e`) with
 one goal: getting the leaked-dec-2026 Xbox Series build (1.0.2.1) to run, and
 recording what actually happens on a real machine. Source only — no game
