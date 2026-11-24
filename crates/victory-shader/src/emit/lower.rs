@@ -399,8 +399,15 @@ impl<'a> Lower<'a> {
                 })
             };
             let wave = if x.native.wave64 { 64 } else { 32 };
-            let one_wave = cs.threads.iter().product::<u32>() <= wave;
-            if console_lanes || one_wave && s.lds_dwords > 0 {
+            let group: u32 = cs.threads.iter().product();
+            let one_wave = group <= wave;
+            // A group that fits in 32 lanes needs no wave of its own either
+            // way: the host's smallest wave holds all of it, so the lanes
+            // still share their LDS without a barrier. Asking for 64 lanes
+            // there only keeps the pipeline from being made on a host whose
+            // widest wave is 32 (issue #189 shows the rest).
+            let fits_32 = group <= 32;
+            if console_lanes || one_wave && s.lds_dwords > 0 && !fits_32 {
                 s.wave_size = Some(wave);
             }
         }

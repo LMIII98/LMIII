@@ -62,6 +62,23 @@ fn err(e: windows::core::Error) -> String {
     e.message().to_string()
 }
 
+/// The wave size a container's `PSV0` part requires and its thread group, if
+/// it requires a wave (`PSVRuntimeInfo2`: a `u32` byte count, 16 bytes of
+/// stage info, the minimum and maximum lane counts, the rest of the runtime
+/// info, then the three thread counts).
+fn wave_lanes(dxil: &[u8]) -> Option<(u32, [u32; 3])> {
+    let container = Container::parse(dxil).ok()?;
+    let part = container.part(FourCC::PSV0)?;
+    let word = |at: usize| {
+        part.data
+            .get(at..at + 4)
+            .map(|b| u32::from_le_bytes(b.try_into().expect("4 bytes")))
+    };
+    let (min, max) = (word(20)?, word(24)?);
+    let threads = [word(40)?, word(44)?, word(48)?];
+    (min == max && min > 0).then_some((min, threads))
+}
+
 impl Host {
     /// The default adapter, or WARP with `warp` (or `VICTORY_WARP=1`).
     pub fn new(warp: bool) -> Result<Self, String> {
@@ -233,7 +250,14 @@ impl Host {
             ..Default::default()
         };
         // SAFETY: the description points at live data.
-        unsafe { self.device.CreateComputePipelineState(&desc) }.map_err(err)
+        unsafe { self.device.CreateComputePipelineState(&desc) }.map_err(|e| {
+            // A program that shares lanes within one wave asks for a 64-lane
+            // wave, which a host whose widest wave is 32 lanes refuses.
+            match wave_lanes(cs) {
+                Some((wave, threads)) => format!("{} (wave {wave}, threads {threads:?})", err(e)),
+                None => err(e),
+            }
+        })
     }
 
     /// A graphics pipeline from a vertex and a pixel shader, with float or

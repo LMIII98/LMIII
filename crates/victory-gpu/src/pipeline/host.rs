@@ -435,7 +435,23 @@ impl HostPipeline {
             let pso = match made {
                 Ok(pso) => pso,
                 Err(e) => {
-                    tracing::warn!(error = %e, ?shaders, "host pipeline refused");
+                    // A console program that needs 64-lane waves cannot run on
+                    // a host device whose widest wave is 32 lanes: the pipeline
+                    // state is refused outright.
+                    // SAFETY: the bytecode pointer and length describe the
+                    // translated DXIL handed to the call above.
+                    let dxil = unsafe {
+                        std::slice::from_raw_parts(
+                            code(0).pShaderBytecode.cast::<u8>(),
+                            code(0).BytecodeLength as usize,
+                        )
+                    };
+                    tracing::warn!(
+                        error = %e,
+                        ?shaders,
+                        wave = ?wave_lanes(dxil),
+                        "host pipeline refused"
+                    );
                     host.log_messages();
                     return None;
                 }
@@ -619,8 +635,35 @@ fn code_bytes(code: &D3D12_SHADER_BYTECODE) -> Vec<u8> {
     unsafe { std::slice::from_raw_parts(code.pShaderBytecode.cast::<u8>(), code.BytecodeLength) }.to_vec()
 }
 
-fn root_signature(
-    device: &ID3D12Device,
+/// The wave-lane range a DXIL container's `PSV0` part requires, if it does
+/// (the console programs that share lanes within one wave ask for 64).
+fn wave_lanes(dxil: &[u8]) -> Option<(u32, u32)> {
+    let word = |at: usize| -> Option<u32> {
+        let b = dxil.get(at..at + 4)?;
+        Some(u32::from_le_bytes(b.try_into().ok()?))
+    };
+    if dxil.get(..4)? != b"DXBC" {
+        return None;
+    }
+    let parts = word(28)? as usize;
+    for i in 0..parts {
+        // Part offsets, then each part as its four character code and size.
+        let at = word(32 + 4 * i)? as usize;
+        if dxil.get(at..at + 4)? != b"PSV0" {
+            continue;
+        }
+        let size = word(at + 4)? as usize;
+        if size < 24 {
+            return None;
+        }
+        let (min, max) = (word(at + 8 + 16)?, word(at + 8 + 20)?);
+        // 0 to `u32::MAX` means the pipeline has no requirement.
+        return (max != u32::MAX).then_some((min, max));
+    }
+    None
+}
+
+fn root_signature(    device: &ID3D12Device,
     params: &[D3D12_ROOT_PARAMETER1],
     samplers: &[D3D12_STATIC_SAMPLER_DESC],
     compute: bool,
