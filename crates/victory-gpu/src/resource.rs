@@ -1842,3 +1842,69 @@ mod tests {
         assert_eq!(slot::<Release>(placed, 0x10)(placed), 0);
     }
 }
+
+/// What the host takes of the console's target shapes: every 2D one the world
+/// asks for is accepted, and a 3D one is not (the console renders to 3D, the
+/// PC refuses it) — the shape a run reports when a target cannot be made.
+#[cfg(all(test, windows))]
+mod targets {
+    use super::*;
+    use windows::Win32::Graphics::Direct3D12::*;
+    use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_SAMPLE_DESC};
+
+    fn make(width: u64, height: u32, format: u32, flags: u32, dimension: u32) -> bool {
+        let Some(host) = crate::host::host() else {
+            return true; // no GPU here: nothing to check
+        };
+        let heap = D3D12_HEAP_PROPERTIES {
+            Type: D3D12_HEAP_TYPE_DEFAULT,
+            ..Default::default()
+        };
+        let desc = D3D12_RESOURCE_DESC {
+            Dimension: if dimension == 3 {
+                D3D12_RESOURCE_DIMENSION_TEXTURE3D
+            } else {
+                D3D12_RESOURCE_DIMENSION_TEXTURE2D
+            },
+            Alignment: 0,
+            Width: width,
+            Height: height,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: DXGI_FORMAT(format as i32),
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
+            Flags: D3D12_RESOURCE_FLAGS(flags as i32),
+        };
+        let mut out: Option<ID3D12Resource> = None;
+        // SAFETY: a live device and a description of a texture.
+        unsafe {
+            host.device
+                .CreateCommittedResource(
+                    &heap,
+                    D3D12_HEAP_FLAG_NONE,
+                    &desc,
+                    D3D12_RESOURCE_STATES(0),
+                    None,
+                    &mut out,
+                )
+                .is_ok()
+        }
+    }
+
+    #[test]
+    fn the_worlds_target_shapes_on_the_host() {
+        // 1024x4096 colour, 2560x1440 colour, its mask, and one with unordered
+        // access: the shapes the 1.0.2.1 world asks for (formats as mapped).
+        assert!(make(1024, 4096, 10, 1, 2), "1024x4096 colour target");
+        assert!(make(2560, 1440, 10, 1, 2), "2560x1440 colour target");
+        assert!(make(2560, 1440, 28, 1, 2), "2560x1440 8-bit target");
+        assert!(make(2560, 1440, 10, 5, 2), "2560x1440 colour, unordered");
+        // The console's own shape for those targets is 3D, which the PC
+        // refuses: that is why they cannot simply be created as asked.
+        assert!(!make(2560, 1440, 10, 1, 3), "a 3D render target is refused");
+    }
+}
