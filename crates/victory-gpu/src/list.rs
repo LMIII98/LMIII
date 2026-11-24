@@ -1068,9 +1068,11 @@ mod state {
         }
         with_state(this, |list, s| s.dispatch_mesh(list, x));
     }
-    /// `DispatchMeshX(x, flags, indirect arguments, payload)`.
-    /// shortcut: dispatches whose group count is in GPU memory (indirect)
-    /// are dropped; make them ExecuteIndirect when the title uses them.
+    /// `DispatchMeshX(x, flags, indirect arguments, payload)`: `x` groups,
+    /// or — with arguments — `x` records read from GPU memory, each a mesh
+    /// dispatch's three group counts (12 bytes, as in the title's command
+    /// signatures), run through the host's indirect execution. The clamp
+    /// keeps them one-dimensional, like [`Self::dispatch_mesh`].
     pub(super) extern "system" fn dispatch_mesh_x(
         this: This,
         x: u32,
@@ -1079,12 +1081,23 @@ mod state {
         _payload: u64,
     ) {
         super::count_draw();
-        if indirect != 0 {
-            static ONCE: std::sync::Once = std::sync::Once::new();
-            ONCE.call_once(|| tracing::warn!("indirect mesh dispatches dropped"));
+        if indirect == 0 {
+            with_state(this, |list, s| s.dispatch_mesh(list, x));
             return;
         }
-        with_state(this, |list, s| s.dispatch_mesh(list, x));
+        /// PC argument numbering: `D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH`.
+        const MESH: u32 = 10;
+        /// `GROUP_X, GROUP_Y, GROUP_Z`.
+        const STRIDE: u32 = 12;
+        let mut ran = false;
+        with_state(this, |list, s| {
+            ran = s.execute_indirect(list, (MESH, STRIDE, x), indirect, None);
+        });
+        if !ran {
+            super::INDIRECT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| tracing::warn!(x, "an indirect mesh dispatch could not run"));
+        }
     }
     pub(super) extern "system" fn draw_indexed(
         this: This,

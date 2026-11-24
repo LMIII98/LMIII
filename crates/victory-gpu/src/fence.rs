@@ -1,12 +1,13 @@
-//! Fences: a 64-bit value and the events waiting for it. Nothing runs on a
-//! GPU yet, so only signals (the title's, later our queues') move one.
+//! Fences: a 64-bit value and the events waiting for it. Signals (the
+//! title's, our queues') move one; a wait may name an event or, with a null
+//! one, block until the value is reached.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 use std::ffi::c_void;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Condvar, Mutex};
 
-use crate::object::{self, E_NOTIMPL, FENCE, HRESULT, Iid, Object, S_OK, Table, This, guid};
+use crate::object::{self, FENCE, HRESULT, Iid, Object, S_OK, Table, This, guid};
 use crate::resource::PAGEABLE_IIDS;
 
 pub(crate) const FENCE_IIDS: [Iid; 4] = [
@@ -30,6 +31,10 @@ struct Fence {
     flags: u32,
     /// Events to set once the value reaches theirs (handles as integers).
     waiters: Mutex<Vec<(u64, usize)>>,
+    /// Wakes waits that named no event (`SetEventOnCompletion` with a null
+    /// one blocks until the value is reached); signalled under `waiters`, so
+    /// no signal is missed between a check and a wait.
+    reached: Condvar,
 }
 
 fn fence<'a>(this: This) -> &'a Fence {
@@ -50,6 +55,7 @@ pub(crate) extern "system" fn create(
         value: AtomicU64::new(initial),
         flags,
         waiters: Mutex::new(Vec::new()),
+        reached: Condvar::new(),
     });
     object::hand_out(FENCE, fence, iid, &FENCE_IIDS, out)
 }
@@ -88,10 +94,16 @@ extern "system" fn set_event_on_completion(this: This, value: u64, event: *mut c
         return S_OK;
     }
     if event.is_null() {
-        // shortcut: a null event means "block until reached"; nothing can
-        // reach it while no GPU work runs, so fail instead of hanging.
-        tracing::warn!(value, "blocking fence wait not implemented");
-        return E_NOTIMPL;
+        // D3D12: a null event means "block until the value is reached".
+        // Signals store and wake under this lock, so a signal landing
+        // between the check above and the wait is not lost.
+        while fence.value.load(Ordering::Acquire) < value {
+            waiters = fence
+                .reached
+                .wait(waiters)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+        return S_OK;
     }
     waiters.push((value, event as usize));
     S_OK
@@ -107,6 +119,9 @@ pub(crate) extern "system" fn signal(this: This, value: u64) -> HRESULT {
         }
         !reached
     });
+    drop(waiters);
+    // Blocking waits (a null event) re-check the value themselves.
+    fence.reached.notify_all();
     S_OK
 }
 
@@ -161,11 +176,17 @@ mod tests {
         assert_eq!(wait(f, 5, event), S_OK, "already reached");
         // SAFETY: as above.
         assert_eq!(unsafe { WaitForSingleObject(event, 0) }, WAIT_OBJECT_0);
-        assert_eq!(wait(f, 9, std::ptr::null_mut()), E_NOTIMPL);
+        // A null event blocks until the value is reached (#759).
+        let address = f as usize;
+        let blocked = std::thread::spawn(move || wait(address as This, 9, std::ptr::null_mut()));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(!blocked.is_finished(), "still waiting below 9");
+        assert_eq!(signal(f, 9), S_OK);
+        assert_eq!(blocked.join().unwrap(), S_OK, "woken by the signal");
         // Grand Theft Auto VI reads the value at the fence's address.
         let at = slot::<extern "system" fn(This) -> u64>(f, 0x60)(f);
         // SAFETY: the fence's value.
-        assert_eq!(unsafe { *(at as *const u64) }, 5);
+        assert_eq!(unsafe { *(at as *const u64) }, 9);
         // SAFETY: ours.
         unsafe { CloseHandle(event) };
         assert_eq!(slot::<extern "system" fn(This) -> u32>(f, 0x10)(f), 0);
