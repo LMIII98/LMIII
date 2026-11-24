@@ -522,7 +522,12 @@ impl Shader {
                 }
             }
         }
-        if let Some(n) = self.wave_size {
+        // The code is emitted for the console's wave; a host whose widest wave
+        // is 32 lanes refuses the pipeline if the container requires more, so
+        // `VICTORY_SHADER_WAVE_RUN` leaves the requirement out (the code then
+        // runs at whatever wave the host picks: wrong for programs that move
+        // data across the console's 64-lane wave, see issue #189).
+        if let Some(n) = self.wave_size.filter(|_| !super::wave_requirement_off()) {
             props.push(i32c(&mut self, 11));
             let n = Some(i32c(&mut self, n));
             props.push(self.m.md_node(vec![n]));

@@ -122,10 +122,26 @@ pub fn loop_limit() -> u32 {
     })
 }
 
+/// Whether translation leaves the console's wave requirement out of the
+/// container, so that a host whose widest wave is 32 lanes takes the program.
+///
+/// With the `diagnostics` feature, `VICTORY_SHADER_WAVE_RUN=1` does that. The
+/// emitted code keeps the console's wave semantics, so a program that moves
+/// data across the console's 64-lane wave computes wrong values; this shows
+/// what such programs are worth before they are emulated (issue #189) — it is
+/// not that emulation. Part of the translation, so the shader cache must key
+/// on it (`victory-gpu`'s does).
+pub fn wave_requirement_off() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OFF.get_or_init(|| {
+        cfg!(feature = "diagnostics")
+            && std::env::var("VICTORY_SHADER_WAVE_RUN").is_ok_and(|v| v == "1")
+    })
+}
+
 /// `VICTORY_SHADER_LOOP_LIMIT`'s value; the default when it is unset,
 /// unreadable or 0. Pure, for testing.
-fn parse_loop_limit(value: Option<&str>) -> u32 {
-    let parsed = value
+fn parse_loop_limit(value: Option<&str>) -> u32 {    let parsed = value
         .map(str::trim)
         .and_then(|v| match v.strip_prefix("0x") {
             Some(hex) => u32::from_str_radix(hex, 16).ok(),

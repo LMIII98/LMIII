@@ -50,9 +50,17 @@ fn build() -> &'static [u8; 32] {
                 "VICTORY_SHADER_LOOP_LIMIT: translated loops stop sooner"
             );
         }
+        let no_wave = victory_shader::emit::wave_requirement_off();
+        if no_wave {
+            tracing::warn!(
+                "VICTORY_SHADER_WAVE_RUN: wave requirements left out of the containers; \
+                 programs that move data across a 64-lane wave compute wrong values"
+            );
+        }
         match exe {
             Ok(mut bytes) => {
                 bytes.extend_from_slice(&limit.to_le_bytes());
+                bytes.push(u8::from(no_wave));
                 *blake3::hash(&bytes).as_bytes()
             }
             Err(e) => {

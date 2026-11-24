@@ -170,7 +170,10 @@ pub(crate) fn psv(p: &Psv) -> Vec<u8> {
                 .any(|e| matches!(e.interp, 6 | 7) || e.kind == 12),
         );
     }
-    let (min, max) = p.wave_size.map_or((0, u32::MAX), |n| (n, n));
+    // A host whose widest wave is 32 lanes cannot take a 64-lane requirement:
+    // `VICTORY_SHADER_WAVE_RUN` leaves it out (see `wave_requirement_off`).
+    let required = p.wave_size.filter(|_| !crate::emit::wave_requirement_off());
+    let (min, max) = required.map_or((0, u32::MAX), |n| (n, n));
     info[16..20].copy_from_slice(&min.to_le_bytes());
     info[20..24].copy_from_slice(&max.to_le_bytes());
     info[24] = p.stage;
