@@ -438,18 +438,42 @@ pub(crate) fn find(address: u64, len: u64) -> Option<Arc<Shadow>> {
 /// Titles also use memory outside any buffer object as GPU memory (Grand
 /// Theft Auto VI's interface vertices, from its own allocator). Such memory
 /// gets copies of the aligned windows it touches.
-/// shortcut: copies of windows are never freed; key them to the title's
-/// allocations if memory use grows.
 const WINDOW: u64 = 4 << 20;
 
-/// Copies of title memory outside buffers, by (start, length).
-static LOOSE: Mutex<BTreeMap<(u64, u64), Arc<Shadow>>> = Mutex::new(BTreeMap::new());
+/// How many bytes of those windows are kept. The title's own allocator keeps
+/// handing out fresh ones (a menu frame touches two or three), so without a
+/// budget the copies grow by ~250 MB/s and the run dies of a failed
+/// allocation a minute in. Past the budget the least recently used windows
+/// go; a list that still holds one keeps it alive until it is submitted, and
+/// a window asked for again is copied afresh.
+const LOOSE_BUDGET: u64 = 512 << 20;
+
+/// The copies of title memory outside buffers, by (start, length), with the
+/// use counter that decides which goes first.
+struct Loose {
+    map: BTreeMap<(u64, u64), (Arc<Shadow>, u64)>,
+    bytes: u64,
+    uses: u64,
+}
+
+static LOOSE: Mutex<Loose> = Mutex::new(Loose {
+    map: BTreeMap::new(),
+    bytes: 0,
+    uses: 0,
+});
+
+fn loose_map() -> std::sync::MutexGuard<'static, Loose> {
+    LOOSE.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 fn loose(address: u64, end: u64) -> Option<Arc<Shadow>> {
     let start = address & !(WINDOW - 1);
     let len = end.next_multiple_of(WINDOW) - start;
-    let mut map = LOOSE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(shadow) = map.get(&(start, len)) {
+    let mut loose = loose_map();
+    loose.uses += 1;
+    let now = loose.uses;
+    if let Some((shadow, used)) = loose.map.get_mut(&(start, len)) {
+        *used = now;
         return Some(shadow.clone());
     }
     let (buffer, data) = host()?.shared_buffer(len)?;
@@ -462,7 +486,21 @@ fn loose(address: u64, end: u64) -> Option<Arc<Shadow>> {
         "loose memory copied to the host"
     );
     let shadow = Arc::new(Shadow::new(buffer, data, gpu, start, len));
-    map.insert((start, len), shadow.clone());
+    loose.map.insert((start, len), (shadow.clone(), now));
+    loose.bytes += len;
+    // Least recently used first, but never the window just made.
+    while loose.bytes > LOOSE_BUDGET && loose.map.len() > 1 {
+        let victim = loose
+            .map
+            .iter()
+            .filter(|(k, (_, used))| **k != (start, len) && *used != now)
+            .min_by_key(|(_, (_, used))| *used)
+            .map(|(k, _)| *k);
+        let Some(victim) = victim else { break };
+        if loose.map.remove(&victim).is_some() {
+            loose.bytes -= victim.1;
+        }
+    }
     Some(shadow)
 }
 
@@ -474,11 +512,10 @@ pub(crate) fn near(va: u64) -> String {
         .filter_map(|e| e.shadow.as_deref().map(|s| (s.gpu, s.start, s.len)))
         .collect();
     all.extend(
-        LOOSE
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        loose_map()
+            .map
             .values()
-            .map(|s| (s.gpu, s.start, s.len)),
+            .map(|(s, _)| (s.gpu, s.start, s.len)),
     );
     let below = all.iter().filter(|c| c.0 <= va).max();
     let above = all.iter().filter(|c| c.0 > va).min();
