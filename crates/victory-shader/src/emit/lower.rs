@@ -2995,6 +2995,22 @@ impl<'a> Lower<'a> {
                 }
                 (props, None)
             }
+            Fields::Smem { .. } => {
+                // The descriptor is only an operand of a constant-buffer load
+                // (`s_buffer_load_dword*`): the program reads the buffer
+                // through it, and that use site resolves the descriptor from
+                // its root parameter, so nothing here needs a number. The
+                // dwords have no host value either (a GPU address, a format),
+                // so they are written as missing: a program that does read
+                // them as numbers still stops, and names this.
+                const CBV: Why = "a constant buffer's descriptor read as data";
+                for k in 0..count {
+                    if let Some(v) = inst.write(Reg::S(code + k as u8)) {
+                        self.vals.insert(v, Val::Missing(CBV));
+                    }
+                }
+                return Ok(());
+            }
             _ => return Err("a scalar memory read as data"),
         };
         let h = self.handle(site, &src, false, props)?;
@@ -5780,14 +5796,18 @@ impl<'a> Lower<'a> {
             return Ok(());
         }
         let (op, sample) = match name {
-            "image_sample" | "image_sample_o" => (60, true),
+            // `_cl` is the same sample with the sampler's minimum level of
+            // detail clamped in, which the sampler we hand the host already
+            // carries; the console has no separate operand for it (GFX10
+            // ISA, IMAGE_SAMPLE_*_CL: address, resource, sampler).
+            "image_sample" | "image_sample_o" | "image_sample_cl" => (60, true),
             "image_sample_lz" | "image_sample_l" => (62, true),
-            "image_sample_b" => (61, true),
+            "image_sample_b" | "image_sample_b_cl" => (61, true),
             "image_sample_c_lz" => (65, true),
-            "image_sample_d" => (63, true),
+            "image_sample_d" | "image_sample_d_cl" => (63, true),
             "image_get_lod" if self.s.pixel => (81, true),
             // Implicit derivatives: pixel shaders only.
-            "image_sample_c" if self.s.pixel => (64, true),
+            "image_sample_c" | "image_sample_c_cl" if self.s.pixel => (64, true),
             "image_gather4" | "image_gather4_lz" | "image_gather4_lz_o" => (73, true),
             "image_load" | "image_load_mip" => (66, false),
             "image_get_resinfo" => (72, false),
@@ -5849,8 +5869,9 @@ impl<'a> Lower<'a> {
             // Texel offsets (`_o`) come first: x in bits 0-5, y in 8-13,
             // signed (programmable offsets: gathers only).
             let offset_word = name.ends_with("_o");
-            let first =
-                usize::from(offset_word) + usize::from(name == "image_sample_b") + usize::from(cmp);
+            let first = usize::from(offset_word)
+                + usize::from(name.starts_with("image_sample_b"))
+                + usize::from(cmp);
             // Coordinates the size divides (not the array slice); explicit
             // gradients (x then y) come before the coordinates.
             let spatial = coords - usize::from(kind == 6 || kind == 7);
