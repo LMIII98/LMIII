@@ -1693,6 +1693,38 @@ fn host_texture(
     };
     if let Err(e) = made {
         tracing::warn!(error = %e, desc = ?d, "no host texture");
+        // As a debug layer would: retry the description with one thing changed
+        // at a time; the first the host takes names what it objects to.
+        let try_one = |what: &str, desc: &ResourceDesc| {
+            let mut out: Option<ID3D12Resource> = None;
+            // SAFETY: a live device and a description laid out as the host's.
+            let made = unsafe {
+                host.device.CreateCommittedResource(
+                    &heap,
+                    D3D12_HEAP_FLAG_NONE,
+                    (desc as *const ResourceDesc).cast(),
+                    D3D12_RESOURCE_STATES(0),
+                    None,
+                    &mut out,
+                )
+            };
+            tracing::info!(
+                variant = what,
+                ok = made.is_ok(),
+                error = ?made.err().map(|e| e.code()),
+                "texture variant"
+            );
+        };
+        let mut no_flags = d;
+        no_flags.flags = 0;
+        try_one("no resource flags", &no_flags);
+        let mut typeless = d;
+        typeless.format = family(d.format);
+        try_one("typeless format", &typeless);
+        let mut three_d = d;
+        three_d.dimension = 3;
+        try_one("3D", &three_d);
+        try_one("as asked", &d);
     }
     if let Some(t) = &texture {
         crate::host::name(t, || {
