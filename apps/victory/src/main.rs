@@ -9,6 +9,27 @@ mod run;
 mod shader;
 mod translate;
 
+/// The DirectX 12 Agility SDK `victory.exe` ships with: the loader reads these
+/// two exports and, when `D3D12\D3D12Core.dll` sits beside the executable,
+/// uses that runtime — the only way to have the D3D12 debug layer on a machine
+/// whose Windows install has no graphics tools (the system `d3d12.dll`
+/// answers `DXGI_ERROR_SDK_COMPONENT_MISSING`). `apps/victory/victory.def`
+/// exports them; they are data, so nothing calls them.
+#[cfg(all(windows, not(test)))]
+mod agility {
+    /// Agility SDK 1.620, as the loader numbers it.
+    #[used]
+    #[unsafe(no_mangle)]
+    pub static D3D12SDKVersion: u32 = 620;
+    /// Where `D3D12Core.dll` and `d3d12SDKLayers.dll` live, relative to the
+    /// executable. The loader reads this export as a pointer to a
+    /// NUL-terminated string (a `const char *`), not as the characters
+    /// themselves: handing it the array made `d3d12.dll` dereference them.
+    #[used]
+    #[unsafe(no_mangle)]
+    pub static D3D12SDKPath: &[u8; 9] = b".\\D3D12\\\0";
+}
+
 use std::path::PathBuf;
 
 use anyhow::Result;

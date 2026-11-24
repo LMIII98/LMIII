@@ -15,6 +15,9 @@ const MAX_ENCODED_RUN: usize = 512;
 
 const ALLOWED_EXTENSIONS: &[&str] = &[
     "rs", "toml", "md", "txt", "lock", "yml", "yaml", "json", "hlsl", "hlsli", "ps1", "cmd", "sh",
+    // Our own module definition file: it names the two exports that make
+    // Windows load the Agility SDK beside the executable (victory.def).
+    "def",
 ];
 const ALLOWED_NAMES: &[&str] = &[
     ".gitignore",
